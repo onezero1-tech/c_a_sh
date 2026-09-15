@@ -15,7 +15,6 @@ jobs:
       options: --user root
 
     env:
-      # 全局 Git 配置，避免 dubious ownership 错误
       GIT_CONFIG_COUNT: "1"
       GIT_CONFIG_KEY_0: "safe.directory"
       GIT_CONFIG_VALUE_0: "*"
@@ -28,7 +27,6 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          # 启用 PowerTools 仓库以获取 appindicator 和 keybinder
           dnf install -y dnf-plugins-core
           dnf config-manager --set-enabled powertools
 
@@ -45,7 +43,6 @@ jobs:
 
       - name: Create dpkg and apt-get shims
         run: |
-          # dpkg shim: 让 setup.dart 认为所有 Debian 包已安装
           cat > /usr/local/bin/dpkg << 'EOF'
           #!/bin/sh
           case "$1" in
@@ -65,7 +62,6 @@ jobs:
           EOF
           chmod +x /usr/local/bin/dpkg
 
-          # apt-get shim: 防止 setup.dart 尝试调用 apt-get
           cat > /usr/local/bin/apt-get << 'EOF'
           #!/bin/sh
           exit 0
@@ -106,29 +102,31 @@ jobs:
           echo "$HOME/.pub-cache/bin" >> $GITHUB_PATH
           flutter_distributor --version
 
-      - name: Patch wifi_ssid plugin for older GLib
+      - name: Patch wifi_ssid plugin and CMake for older GLib
         run: |
           # 先生成插件符号链接
           flutter pub get
 
-          # 找到实际插件源文件并打补丁
+          # 1) 替换 GLib 2.70+ 的 API 名称为旧名称
           PLUGIN_LINK="linux/flutter/ephemeral/.plugin_symlinks/wifi_ssid/linux/wifi_ssid_plugin.cc"
           if [ -L "$PLUGIN_LINK" ] || [ -f "$PLUGIN_LINK" ]; then
             REAL_PLUGIN=$(readlink -f "$PLUGIN_LINK")
             echo "Patching real plugin file: $REAL_PLUGIN"
             sed -i 's/g_spawn_check_wait_status/g_spawn_check_exit_status/g' "$REAL_PLUGIN"
-            sed -i 's/return g_variant_new_string(/return (GVariant *)g_variant_new_string(/g' "$REAL_PLUGIN"
-            sed -i 's/return g_variant_new_boolean(/return (GVariant *)g_variant_new_boolean(/g' "$REAL_PLUGIN"
-            sed -i 's/return g_variant_new_int32(/return (GVariant *)g_variant_new_int32(/g' "$REAL_PLUGIN"
-            sed -i 's/return g_variant_new_uint32(/return (GVariant *)g_variant_new_uint32(/g' "$REAL_PLUGIN"
-            sed -i 's/return g_strdup(/return (gchar *)g_strdup(/g' "$REAL_PLUGIN"
-            sed -i 's/return g_variant_dup_string(/return (gchar *)g_variant_dup_string(/g' "$REAL_PLUGIN"
-            echo "Patch applied successfully."
+            echo "API name replacement done."
           else
             echo "ERROR: Plugin file not found at $PLUGIN_LINK"
             find . -name "wifi_ssid_plugin.cc" 2>/dev/null
             exit 1
           fi
+
+          # 2) 在项目 CMakeLists.txt 中加上 -fpermissive，容忍 void* 隐式转换
+          if ! grep -q 'fpermissive' linux/CMakeLists.txt; then
+            sed -i '/^cmake_minimum_required/a set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fpermissive")' linux/CMakeLists.txt
+            echo "Added -fpermissive to linux/CMakeLists.txt"
+          fi
+          echo "=== linux/CMakeLists.txt head ==="
+          head -10 linux/CMakeLists.txt
 
       - name: Build c_a_sh AppImage
         run: |
@@ -150,11 +148,9 @@ jobs:
           FAILED=0
           echo "Scanning ELF files for GLIBC symbols newer than ${MAX_GLIBC}..."
 
-          # 收集所有 ELF 文件
           find squashfs-root -type f -exec file {} \; | grep 'ELF' | cut -d: -f1 > /tmp/elf_files.txt
 
           while read -r elf; do
-            # 提取该 ELF 文件引用的所有 GLIBC 版本
             readelf --version-info "$elf" 2>/dev/null | grep -oP 'GLIBC_\K[0-9.]+' | sort -uV > /tmp/glibc_vers.txt
             while read -r ver; do
               if [ "$(printf '%s\n' "$MAX_GLIBC" "$ver" | sort -V | tail -n 1)" != "$MAX_GLIBC" ]; then
