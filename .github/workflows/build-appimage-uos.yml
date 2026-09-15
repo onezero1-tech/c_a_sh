@@ -1,0 +1,90 @@
+name: Build FlClash AppImage for UOS 10 (glibc 2.28)
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-appimage:
+    runs-on: ubuntu-24.04
+
+    container:
+      image: quay.io/pypa/manylinux_2_28_x86_64
+      options: --user root
+
+    steps:
+      - name: Checkout FlClash
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      - name: Install build dependencies
+        run: |
+          dnf install -y \
+            curl wget git unzip xz \
+            clang cmake ninja-build pkg-config \
+            libgtk-3-devel libayatana-appindicator3-devel \
+            libkeybinder3-devel libfuse2 fuse \
+            python3-pip \
+            file
+
+      - name: Install Flutter (3.47.1)
+        run: |
+          FLUTTER_VERSION=3.47.1
+          wget -q "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${FLUTTER_VERSION}-stable.tar.xz"
+          tar xf "flutter_linux_${FLUTTER_VERSION}-stable.tar.xz" -C /opt
+          rm -f "flutter_linux_${FLUTTER_VERSION}-stable.tar.xz"
+          echo "/opt/flutter/bin" >> $GITHUB_PATH
+
+      - name: Install Go (1.26.4)
+        run: |
+          GO_VERSION=1.26.4
+          wget -q "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          tar -C /usr/local -xzf "go${GO_VERSION}.linux-amd64.tar.gz"
+          rm -f "go${GO_VERSION}.linux-amd64.tar.gz"
+          echo "/usr/local/go/bin" >> $GITHUB_PATH
+
+      - name: Build FlClash AppImage
+        run: |
+          git submodule update --init --recursive
+          flutter pub get
+          dart setup.dart linux --targets appimage
+
+      - name: Verify GLIBC compatibility (ABI gate)
+        run: |
+          APPIMAGE=$(find build -name "*.AppImage" -type f | head -n 1)
+          if [ -z "$APPIMAGE" ]; then
+            echo "ERROR: No AppImage found"
+            exit 1
+          fi
+          echo "Found: $APPIMAGE"
+          chmod +x "$APPIMAGE"
+          "$APPIMAGE" --appimage-extract > /dev/null 2>&1 || true
+
+          MAX_GLIBC="2.28"
+          FAILED=0
+          echo "Scanning ELF files for GLIBC symbols newer than ${MAX_GLIBC}..."
+          find squashfs-root -type f -exec file {} \; | grep 'ELF' | cut -d: -f1 | while read -r elf; do
+            readelf --version-info "$elf" 2>/dev/null | grep -oP 'GLIBC_\K[0-9.]+' | sort -uV | while read -r ver; do
+              if [ "$(printf '%s\n' "$MAX_GLIBC" "$ver" | sort -V | tail -n 1)" != "$MAX_GLIBC" ]; then
+                echo "VIOLATION: $elf requires GLIBC_${ver}"
+                FAILED=1
+              fi
+            done
+          done
+
+          if [ "$FAILED" -eq 1 ]; then
+            echo "ABI gate failed: AppImage references GLIBC symbols newer than ${MAX_GLIBC}"
+            exit 1
+          fi
+          echo "ABI gate passed: all GLIBC references <= ${MAX_GLIBC}"
+          rm -rf squashfs-root
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlClash-AppImage-UOS10
+          path: build/**/*.AppImage
+          if-no-files-found: error
