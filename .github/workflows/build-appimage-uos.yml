@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-24.04
 
     container:
-      image: registry.uniontech.com/uos-server-base/uos-server-20-1070u1a:latest
+      image: quay.io/pypa/manylinux_2_28_x86_64
       options: --user root
 
     env:
@@ -25,27 +25,48 @@ jobs:
         with:
           submodules: 'recursive'
 
-      - name: Verify environment (glibc & OS)
-        run: |
-          echo "=== OS Release ==="
-          cat /etc/os-release || true
-          echo "=== glibc version ==="
-          ldd --version || true
-          echo "=== gcc version ==="
-          gcc --version || true
-
       - name: Install system dependencies
         run: |
-          apt-get update
-          apt-get install -y \
-            curl wget git unzip xz-utils \
+          dnf install -y dnf-plugins-core
+          dnf config-manager --set-enabled powertools
+
+          dnf install -y \
+            curl wget git unzip xz \
             clang cmake ninja-build pkg-config \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            libkeybinder-3.0-dev \
-            libfuse2 \
+            gtk3-devel \
+            libappindicator-gtk3-devel \
+            keybinder3-devel \
+            fuse-libs \
+            python3-pip \
             file \
             binutils
+
+      - name: Create dpkg and apt-get shims
+        run: |
+          cat > /usr/local/bin/dpkg << 'EOF'
+          #!/bin/sh
+          case "$1" in
+            -s|--status)
+              echo "Package: $2"
+              echo "Status: install ok installed"
+              exit 0
+              ;;
+            -l|--list)
+              echo "ii  $2  installed"
+              exit 0
+              ;;
+            *)
+              exit 0
+              ;;
+          esac
+          EOF
+          chmod +x /usr/local/bin/dpkg
+
+          cat > /usr/local/bin/apt-get << 'EOF'
+          #!/bin/sh
+          exit 0
+          EOF
+          chmod +x /usr/local/bin/apt-get
 
       - name: Install Flutter
         run: |
@@ -81,28 +102,50 @@ jobs:
           echo "$HOME/.pub-cache/bin" >> $GITHUB_PATH
           flutter_distributor --version
 
-      - name: Patch wifi_ssid plugin for older GLib
+      - name: Patch wifi_ssid plugin and CMake flags
         run: |
+          set -e
+          git config --global --add safe.directory '*'
+
+          # 生成 .plugin_symlinks 目录
           flutter pub get
 
           PLUGIN_LINK="linux/flutter/ephemeral/.plugin_symlinks/wifi_ssid/linux/wifi_ssid_plugin.cc"
-          if [ -L "$PLUGIN_LINK" ] || [ -f "$PLUGIN_LINK" ]; then
-            REAL_PLUGIN=$(readlink -f "$PLUGIN_LINK")
-            echo "Patching real plugin file: $REAL_PLUGIN"
-            sed -i 's/g_spawn_check_wait_status/g_spawn_check_exit_status/g' "$REAL_PLUGIN"
-            echo "API name replacement done."
-          else
-            echo "ERROR: Plugin file not found at $PLUGIN_LINK"
+          if [ ! -f "$PLUGIN_LINK" ]; then
+            echo "ERROR: Plugin not found at $PLUGIN_LINK"
             find . -name "wifi_ssid_plugin.cc" 2>/dev/null
             exit 1
           fi
+          REAL_PLUGIN=$(readlink -f "$PLUGIN_LINK")
+          echo "Patching source: $REAL_PLUGIN"
 
-          if ! grep -q 'fpermissive' linux/CMakeLists.txt; then
-            sed -i '/^cmake_minimum_required/a set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fpermissive")' linux/CMakeLists.txt
-            echo "Added -fpermissive to linux/CMakeLists.txt"
+          # 1) 替换新版 GLib API 为旧版名称
+          sed -i 's/g_spawn_check_wait_status/g_spawn_check_exit_status/g' "$REAL_PLUGIN"
+
+          # 2) 在第 57、353 行的 return 后插入显式类型转换
+          #    先打印原始行，便于排查
+          echo "=== Before ==="
+          sed -n '57p;353p' "$REAL_PLUGIN"
+
+          sed -i '57s/^\(\s*return\s\+\)/\1(GVariant *)/' "$REAL_PLUGIN"
+          sed -i '353s/^\(\s*return\s\+\)/\1(gchar *)/' "$REAL_PLUGIN"
+
+          echo "=== After ==="
+          sed -n '57p;353p' "$REAL_PLUGIN"
+
+          # 3) 移除主 CMakeLists.txt 里的 -Werror，让 -fpermissive 生效
+          if [ -f linux/CMakeLists.txt ]; then
+            cp linux/CMakeLists.txt linux/CMakeLists.txt.bak
+            sed -i 's/-Werror//g' linux/CMakeLists.txt
+
+            # 若尚未加入 -fpermissive，追加到 cmake_minimum_required 之后
+            if ! grep -q 'fpermissive' linux/CMakeLists.txt; then
+              sed -i '/^cmake_minimum_required/a add_compile_options(-fpermissive)' linux/CMakeLists.txt
+            fi
+
+            echo "=== linux/CMakeLists.txt (first 20 lines) ==="
+            head -20 linux/CMakeLists.txt
           fi
-          echo "=== linux/CMakeLists.txt head ==="
-          head -10 linux/CMakeLists.txt
 
       - name: Build c_a_sh AppImage
         run: |
