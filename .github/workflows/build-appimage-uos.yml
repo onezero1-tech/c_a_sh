@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-24.04
 
     container:
-      image: quay.io/pypa/manylinux_2_28_x86_64
+      image: registry.uniontech.com/uos-server-base/uos-server-20-1070u1a:latest
       options: --user root
 
     env:
@@ -25,48 +25,27 @@ jobs:
         with:
           submodules: 'recursive'
 
+      - name: Verify environment (glibc & OS)
+        run: |
+          echo "=== OS Release ==="
+          cat /etc/os-release || true
+          echo "=== glibc version ==="
+          ldd --version || true
+          echo "=== gcc version ==="
+          gcc --version || true
+
       - name: Install system dependencies
         run: |
-          dnf install -y dnf-plugins-core
-          dnf config-manager --set-enabled powertools
-
-          dnf install -y \
-            curl wget git unzip xz \
+          apt-get update
+          apt-get install -y \
+            curl wget git unzip xz-utils \
             clang cmake ninja-build pkg-config \
-            gtk3-devel \
-            libappindicator-gtk3-devel \
-            keybinder3-devel \
-            fuse-libs \
-            python3-pip \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            libkeybinder-3.0-dev \
+            libfuse2 \
             file \
             binutils
-
-      - name: Create dpkg and apt-get shims
-        run: |
-          cat > /usr/local/bin/dpkg << 'EOF'
-          #!/bin/sh
-          case "$1" in
-            -s|--status)
-              echo "Package: $2"
-              echo "Status: install ok installed"
-              exit 0
-              ;;
-            -l|--list)
-              echo "ii  $2  installed"
-              exit 0
-              ;;
-            *)
-              exit 0
-              ;;
-          esac
-          EOF
-          chmod +x /usr/local/bin/dpkg
-
-          cat > /usr/local/bin/apt-get << 'EOF'
-          #!/bin/sh
-          exit 0
-          EOF
-          chmod +x /usr/local/bin/apt-get
 
       - name: Install Flutter
         run: |
@@ -102,12 +81,10 @@ jobs:
           echo "$HOME/.pub-cache/bin" >> $GITHUB_PATH
           flutter_distributor --version
 
-      - name: Patch wifi_ssid plugin and CMake for older GLib
+      - name: Patch wifi_ssid plugin for older GLib
         run: |
-          # 先生成插件符号链接
           flutter pub get
 
-          # 1) 替换 GLib 2.70+ 的 API 名称为旧名称
           PLUGIN_LINK="linux/flutter/ephemeral/.plugin_symlinks/wifi_ssid/linux/wifi_ssid_plugin.cc"
           if [ -L "$PLUGIN_LINK" ] || [ -f "$PLUGIN_LINK" ]; then
             REAL_PLUGIN=$(readlink -f "$PLUGIN_LINK")
@@ -120,7 +97,6 @@ jobs:
             exit 1
           fi
 
-          # 2) 在项目 CMakeLists.txt 中加上 -fpermissive，容忍 void* 隐式转换
           if ! grep -q 'fpermissive' linux/CMakeLists.txt; then
             sed -i '/^cmake_minimum_required/a set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fpermissive")' linux/CMakeLists.txt
             echo "Added -fpermissive to linux/CMakeLists.txt"
