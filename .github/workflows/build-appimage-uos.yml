@@ -34,6 +34,27 @@ jobs:
             fuse-libs \
             python3-pip \
             file
+            
+      - name: Create dpkg shim (AlmaLinux has no dpkg)
+        run: |
+          cat > /usr/local/bin/dpkg << 'EOF'
+          #!/bin/sh
+          case "$1" in
+            -s|--status)
+              echo "Package: $2"
+              echo "Status: install ok installed"
+              exit 0
+              ;;
+            -l|--list)
+              echo "ii  $2  installed"
+              exit 0
+              ;;
+            *)
+              exit 0
+              ;;
+          esac
+          EOF
+          chmod +x /usr/local/bin/dpkg
 
       - name: Install Flutter (3.47.1)
         run: |
