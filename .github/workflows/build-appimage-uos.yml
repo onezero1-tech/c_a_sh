@@ -22,11 +22,16 @@ jobs:
 
       - name: Install build dependencies
         run: |
+          dnf config-manager --set-enabled powertools
+
+          # 安装所有必需的依赖包
           dnf install -y \
             curl wget git unzip xz \
             clang cmake ninja-build pkg-config \
-            libgtk-3-devel libayatana-appindicator3-devel \
-            libkeybinder3-devel libfuse2 fuse \
+            gtk3-devel \
+            libappindicator-gtk3-devel \
+            keybinder3-devel \
+            fuse-libs \
             python3-pip \
             file
 
