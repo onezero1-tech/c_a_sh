@@ -71,6 +71,14 @@ jobs:
           tar -C /usr/local -xzf "go${GO_VERSION}.linux-amd64.tar.gz"
           rm -f "go${GO_VERSION}.linux-amd64.tar.gz"
           echo "/usr/local/go/bin" >> $GITHUB_PATH
+
+      - name: Install Rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup show active-toolchain
+
           
       - name: Install flutter_distributor
         run: |
