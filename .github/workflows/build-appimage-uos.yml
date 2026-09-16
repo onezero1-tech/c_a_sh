@@ -99,7 +99,7 @@ jobs:
           cd "sqlite-autoconf-${SQLITE_VERSION}"
 
           # 2. 在当前容器（glibc 2.28）中配置并编译
-          ./configure --enable-all --disable-tcl --prefix=/usr/local
+          ./configure --enable-all --prefix=/usr/local
           make -j$(nproc)
           make install
 
