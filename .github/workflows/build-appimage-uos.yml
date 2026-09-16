@@ -173,8 +173,23 @@ jobs:
             echo "=== linux/CMakeLists.txt (first 20 lines) ==="
             head -20 linux/CMakeLists.txt
           fi
+          
+          # 4) 禁用 Impeller，避免在 UOS 10 上因 GPU 驱动兼容性问题导致段错误
+          MY_APP_CC="linux/runner/my_application.cc"
+          if [ -f "$MY_APP_CC" ]; then
+            if ! grep -q 'fl_dart_project_set_enable_impeller' "$MY_APP_CC"; then
+              # 在 fl_dart_project_new() 之后插入禁用 Impeller 的代码
+              sed -i '/g_autoptr(FlDartProject) project = fl_dart_project_new();/a\  fl_dart_project_set_enable_impeller(project, FALSE);' "$MY_APP_CC"
+              echo "Added Impeller disable in $MY_APP_CC"
+            fi
+          else
+            echo "WARNING: $MY_APP_CC not found, skipping Impeller disable"
+          fi          
 
       - name: Build c_a_sh AppImage
+        env:
+          FLUTTER_ENGINE_SWITCHES: "1"
+          FLUTTER_ENGINE_SWITCH_1: "enable-impeller=false"
         run: |
           git config --global --add safe.directory '*'
           dart setup.dart linux --targets appimage
