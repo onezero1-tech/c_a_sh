@@ -88,6 +88,44 @@ jobs:
           echo "/usr/local/go/bin" >> $GITHUB_PATH
           export PATH="/usr/local/go/bin:$PATH"
           go version
+          
+      - name: Build and replace sqlite3 for glibc 2.28
+        run: |
+          set -e
+          # 1. 下载 SQLite 源码（选择一个稳定版本，例如 3460000）
+          SQLITE_VERSION="3530400"
+          wget -q "https://www.sqlite.org/2026/sqlite-autoconf-${SQLITE_VERSION}.tar.gz"
+          tar xf "sqlite-autoconf-${SQLITE_VERSION}.tar.gz"
+          cd "sqlite-autoconf-${SQLITE_VERSION}"
+
+          # 2. 在当前容器（glibc 2.28）中配置并编译
+          ./configure --enable-all --disable-tcl --prefix=/usr/local
+          make -j$(nproc)
+          make install
+
+          # 3. 定位并替换 Flutter 构建中使用的 libsqlite3.so
+          #    Flutter 的 sqlite3_flutter_libs 插件通常会将库放在 build 目录或 ephemeral 目录中。
+          #    这里我们搜索并替换所有找到的 libsqlite3.so。
+          NEW_LIB="/usr/local/lib/libsqlite3.so"
+          if [ ! -f "$NEW_LIB" ]; then
+            echo "ERROR: Newly built libsqlite3.so not found at $NEW_LIB"
+            exit 1
+          fi
+          echo "New libsqlite3.so built successfully."
+          # 检查新库的 GLIBC 依赖，确保符合要求
+          readelf --version-info "$NEW_LIB" | grep -oP 'GLIBC_\K[0-9.]+' | sort -uV | tail -1
+
+          # 搜索构建目录中所有的 libsqlite3.so 并替换
+          find . -name "libsqlite3.so*" -type f 2>/dev/null | while read -r OLD_LIB; do
+            echo "Replacing: $OLD_LIB"
+            cp -f "$NEW_LIB" "$OLD_LIB"
+          done
+
+          # 4. 清理源码目录，避免影响后续步骤
+          cd ..
+          rm -rf "sqlite-autoconf-${SQLITE_VERSION}" "sqlite-autoconf-${SQLITE_VERSION}.tar.gz"
+
+          echo "SQLite replacement step completed."    
 
       - name: Install Rust toolchain
         run: |
