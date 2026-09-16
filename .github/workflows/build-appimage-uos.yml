@@ -195,6 +195,42 @@ jobs:
           git config --global --add safe.directory '*'
           dart setup.dart linux --targets appimage
 
+          
+      - name: Patch AppRun for software rendering
+        run: |
+          set -e
+          APPIMAGE=$(find dist -name "*.AppImage" -type f | head -n 1)
+          echo "Patching AppRun for: $APPIMAGE"
+
+          rm -rf squashfs-root
+          chmod +x "$APPIMAGE"
+          "$APPIMAGE" --appimage-extract > /dev/null 2>&1
+
+          if [ ! -f "squashfs-root/AppRun" ]; then
+            echo "ERROR: AppRun not found"
+            exit 1
+          fi
+
+          # 在 AppRun 的 shebang 行之后，插入环境变量设置
+          # 先检查是否已经打过补丁，避免重复
+          if ! grep -q 'FLUTTER_LINUX_RENDERER' squashfs-root/AppRun; then
+            sed -i '1a export FLUTTER_LINUX_RENDERER=software' squashfs-root/AppRun
+            echo "Injected FLUTTER_LINUX_RENDERER=software into AppRun"
+          else
+            echo "AppRun already contains FLUTTER_LINUX_RENDERER"
+          fi
+
+          # 打印 AppRun 头部，确认修改
+          head -10 squashfs-root/AppRun
+
+          # 重新打包
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O /tmp/appimagetool
+          chmod +x /tmp/appimagetool
+          ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 /tmp/appimagetool --no-appstream squashfs-root "$APPIMAGE"
+          echo "Repack with AppRun patch done."
+
+          rm -rf squashfs-root          
+
       - name: Replace libsqlite3.so in AppImage and repack
         run: |
           set -e
