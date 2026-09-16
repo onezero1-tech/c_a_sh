@@ -188,8 +188,9 @@ jobs:
 
       - name: Build c_a_sh AppImage
         env:
-          FLUTTER_ENGINE_SWITCHES: "1"
+          FLUTTER_ENGINE_SWITCHES: "2"
           FLUTTER_ENGINE_SWITCH_1: "enable-impeller=false"
+          FLUTTER_ENGINE_SWITCH_2: "enable-software-rendering=true"
         run: |
           git config --global --add safe.directory '*'
           dart setup.dart linux --targets appimage
