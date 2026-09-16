@@ -88,44 +88,6 @@ jobs:
           echo "/usr/local/go/bin" >> $GITHUB_PATH
           export PATH="/usr/local/go/bin:$PATH"
           go version
-          
-      - name: Build and replace sqlite3 for glibc 2.28
-        run: |
-          set -e
-          # 1. 下载 SQLite 源码（选择一个稳定版本，例如 3460000）
-          SQLITE_VERSION="3530400"
-          wget -q "https://www.sqlite.org/2026/sqlite-autoconf-${SQLITE_VERSION}.tar.gz"
-          tar xf "sqlite-autoconf-${SQLITE_VERSION}.tar.gz"
-          cd "sqlite-autoconf-${SQLITE_VERSION}"
-
-          # 2. 在当前容器（glibc 2.28）中配置并编译
-          ./configure --enable-all --prefix=/usr/local
-          make -j$(nproc)
-          make install
-
-          # 3. 定位并替换 Flutter 构建中使用的 libsqlite3.so
-          #    Flutter 的 sqlite3_flutter_libs 插件通常会将库放在 build 目录或 ephemeral 目录中。
-          #    这里我们搜索并替换所有找到的 libsqlite3.so。
-          NEW_LIB="/usr/local/lib/libsqlite3.so"
-          if [ ! -f "$NEW_LIB" ]; then
-            echo "ERROR: Newly built libsqlite3.so not found at $NEW_LIB"
-            exit 1
-          fi
-          echo "New libsqlite3.so built successfully."
-          # 检查新库的 GLIBC 依赖，确保符合要求
-          readelf --version-info "$NEW_LIB" | grep -oP 'GLIBC_\K[0-9.]+' | sort -uV | tail -1
-
-          # 搜索构建目录中所有的 libsqlite3.so 并替换
-          find . -name "libsqlite3.so*" -type f 2>/dev/null | while read -r OLD_LIB; do
-            echo "Replacing: $OLD_LIB"
-            cp -f "$NEW_LIB" "$OLD_LIB"
-          done
-
-          # 4. 清理源码目录，避免影响后续步骤
-          cd ..
-          rm -rf "sqlite-autoconf-${SQLITE_VERSION}" "sqlite-autoconf-${SQLITE_VERSION}.tar.gz"
-
-          echo "SQLite replacement step completed."    
 
       - name: Install Rust toolchain
         run: |
@@ -133,6 +95,32 @@ jobs:
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           export PATH="$HOME/.cargo/bin:$PATH"
           rustup show active-toolchain
+
+      - name: Build sqlite3 for glibc 2.28
+        run: |
+          set -e
+          SQLITE_VERSION="3530400"
+          wget -q "https://www.sqlite.org/2026/sqlite-autoconf-${SQLITE_VERSION}.tar.gz"
+          tar xf "sqlite-autoconf-${SQLITE_VERSION}.tar.gz"
+          cd "sqlite-autoconf-${SQLITE_VERSION}"
+
+          # 在 glibc 2.28 容器内编译，产物天然兼容 UOS 10
+          ./configure --enable-all --prefix=/usr/local
+          make -j$(nproc)
+          make install
+
+          NEW_LIB="/usr/local/lib/libsqlite3.so"
+          if [ ! -f "$NEW_LIB" ]; then
+            echo "ERROR: Newly built libsqlite3.so not found at $NEW_LIB"
+            exit 1
+          fi
+          echo "New libsqlite3.so built successfully."
+          echo "Max GLIBC symbol referenced by new lib:"
+          readelf --version-info "$NEW_LIB" | grep -oP 'GLIBC_\K[0-9.]+' | sort -uV | tail -1
+
+          cd ..
+          rm -rf "sqlite-autoconf-${SQLITE_VERSION}" "sqlite-autoconf-${SQLITE_VERSION}.tar.gz"
+          echo "SQLite build step completed."
 
       - name: Install flutter_distributor
         run: |
@@ -162,7 +150,6 @@ jobs:
           sed -i 's/g_spawn_check_wait_status/g_spawn_check_exit_status/g' "$REAL_PLUGIN"
 
           # 2) 在第 57、353 行的 return 后插入显式类型转换
-          #    先打印原始行，便于排查
           echo "=== Before ==="
           sed -n '57p;353p' "$REAL_PLUGIN"
 
@@ -177,7 +164,6 @@ jobs:
             cp linux/CMakeLists.txt linux/CMakeLists.txt.bak
             sed -i 's/-Werror//g' linux/CMakeLists.txt
 
-            # 若尚未加入 -fpermissive，追加到 cmake_minimum_required 之后
             if ! grep -q 'fpermissive' linux/CMakeLists.txt; then
               sed -i '/^cmake_minimum_required/a add_compile_options(-fpermissive)' linux/CMakeLists.txt
             fi
@@ -190,6 +176,56 @@ jobs:
         run: |
           git config --global --add safe.directory '*'
           dart setup.dart linux --targets appimage
+
+      - name: Replace libsqlite3.so in AppImage and repack
+        run: |
+          set -e
+          APPIMAGE=$(find dist -name "*.AppImage" -type f | head -n 1)
+          if [ -z "$APPIMAGE" ]; then
+            echo "ERROR: No AppImage found for repack"
+            ls -la dist/ 2>/dev/null || true
+            exit 1
+          fi
+          echo "Repacking: $APPIMAGE"
+
+          # 解压 AppImage
+          rm -rf squashfs-root
+          chmod +x "$APPIMAGE"
+          "$APPIMAGE" --appimage-extract > /dev/null 2>&1
+
+          if [ ! -d squashfs-root ]; then
+            echo "ERROR: Failed to extract AppImage"
+            exit 1
+          fi
+
+          # 用 glibc 2.28 下编译的版本替换 AppImage 内的 libsqlite3.so
+          NEW_LIB="/usr/local/lib/libsqlite3.so"
+          FOUND=0
+          find squashfs-root -name "libsqlite3.so*" -type f 2>/dev/null > /tmp/sqlite_files.txt
+          echo "=== SQLite files found in AppImage ==="
+          cat /tmp/sqlite_files.txt
+
+          while read -r OLD_LIB; do
+            [ -z "$OLD_LIB" ] && continue
+            echo "Replacing: $OLD_LIB"
+            ls -la "$OLD_LIB"
+            cp -f "$NEW_LIB" "$OLD_LIB"
+            ls -la "$OLD_LIB"
+            FOUND=1
+          done < /tmp/sqlite_files.txt
+
+          if [ "$FOUND" -eq 0 ]; then
+            echo "WARNING: No libsqlite3.so found inside AppImage"
+            find squashfs-root -name "*.so*" | grep -i sqlite || true
+          fi
+
+          # 重新打包 AppImage（用 appimagetool，通过 APPIMAGE_EXTRACT_AND_RUN 绕过 FUSE）
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O /tmp/appimagetool
+          chmod +x /tmp/appimagetool
+          APPIMAGE_EXTRACT_AND_RUN=1 /tmp/appimagetool --no-appstream squashfs-root "$APPIMAGE"
+          echo "Repack done: $APPIMAGE"
+
+          rm -rf squashfs-root
 
       - name: Verify GLIBC compatibility (ABI gate)
         run: |
@@ -204,7 +240,7 @@ jobs:
           echo "Found: $APPIMAGE"
           chmod +x "$APPIMAGE"
 
-          # 解压 AppImage（APPIMAGE_EXTRACT_AND_RUN 环境下 --appimage-extract 会直接解压到 squashfs-root）
+          # 解压 AppImage
           rm -rf squashfs-root
           "$APPIMAGE" --appimage-extract > /dev/null 2>&1 || true
 
@@ -220,7 +256,7 @@ jobs:
           find squashfs-root -type f -exec file {} \; | grep 'ELF' | cut -d: -f1 > /tmp/elf_files.txt
           echo "ELF file count: $(wc -l < /tmp/elf_files.txt)"
 
-          # 注意：这里的 while read 不接管道，避免子 shell 变量丢失
+          # while read 不接管道，避免子 shell 变量丢失
           while read -r elf; do
             [ -z "$elf" ] && continue
             readelf --version-info "$elf" 2>/dev/null | grep -oP 'GLIBC_\K[0-9.]+' | sort -uV > /tmp/glibc_vers.txt
