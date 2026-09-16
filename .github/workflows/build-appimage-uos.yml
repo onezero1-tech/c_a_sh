@@ -155,24 +155,39 @@ jobs:
 
       - name: Verify GLIBC compatibility (ABI gate)
         run: |
-          APPIMAGE=$(find build -name "*.AppImage" -type f | head -n 1)
+          APPIMAGE=$(find dist build -name "*.AppImage" -type f 2>/dev/null | head -n 1)
           if [ -z "$APPIMAGE" ]; then
             echo "ERROR: No AppImage found"
+            echo "Listing dist/ and build/ for debugging:"
+            ls -la dist/ 2>/dev/null || true
+            ls -la build/ 2>/dev/null || true
             exit 1
           fi
           echo "Found: $APPIMAGE"
           chmod +x "$APPIMAGE"
+
+          # 解压 AppImage（APPIMAGE_EXTRACT_AND_RUN 环境下 --appimage-extract 会直接解压到 squashfs-root）
+          rm -rf squashfs-root
           "$APPIMAGE" --appimage-extract > /dev/null 2>&1 || true
+
+          if [ ! -d squashfs-root ]; then
+            echo "ERROR: Failed to extract AppImage"
+            exit 1
+          fi
 
           MAX_GLIBC="2.28"
           FAILED=0
           echo "Scanning ELF files for GLIBC symbols newer than ${MAX_GLIBC}..."
 
           find squashfs-root -type f -exec file {} \; | grep 'ELF' | cut -d: -f1 > /tmp/elf_files.txt
+          echo "ELF file count: $(wc -l < /tmp/elf_files.txt)"
 
+          # 注意：这里的 while read 不接管道，避免子 shell 变量丢失
           while read -r elf; do
+            [ -z "$elf" ] && continue
             readelf --version-info "$elf" 2>/dev/null | grep -oP 'GLIBC_\K[0-9.]+' | sort -uV > /tmp/glibc_vers.txt
             while read -r ver; do
+              [ -z "$ver" ] && continue
               if [ "$(printf '%s\n' "$MAX_GLIBC" "$ver" | sort -V | tail -n 1)" != "$MAX_GLIBC" ]; then
                 echo "VIOLATION: $elf requires GLIBC_${ver}"
                 FAILED=1
@@ -191,5 +206,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: c_a_sh-AppImage-UOS10
-          path: build/**/*.AppImage
+          path: |
+            dist/**/*.AppImage
+            build/**/*.AppImage
           if-no-files-found: error
