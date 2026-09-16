@@ -108,6 +108,8 @@ jobs:
           ./configure --enable-all --prefix=/usr/local
           make -j$(nproc)
           make install
+          strip --strip-unneeded /usr/local/lib/libsqlite3.so.0* 2>/dev/null || true
+          strip --strip-unneeded /usr/local/lib/libsqlite3.so 2>/dev/null || true          
 
           NEW_LIB="/usr/local/lib/libsqlite3.so"
           if [ ! -f "$NEW_LIB" ]; then
@@ -209,7 +211,14 @@ jobs:
             [ -z "$OLD_LIB" ] && continue
             echo "Replacing: $OLD_LIB"
             ls -la "$OLD_LIB"
-            cp -f "$NEW_LIB" "$OLD_LIB"
+            
+            if [ -L "$OLD_LIB" ]; then
+              REAL_TARGET=$(readlink -f "$OLD_LIB")
+              echo "  symlink -> $REAL_TARGET"
+              cp -f "$NEW_LIB" "$REAL_TARGET"
+            else
+              cp -f "$NEW_LIB" "$OLD_LIB"
+            fi
             ls -la "$OLD_LIB"
             FOUND=1
           done < /tmp/sqlite_files.txt
@@ -222,7 +231,7 @@ jobs:
           # 重新打包 AppImage（用 appimagetool，通过 APPIMAGE_EXTRACT_AND_RUN 绕过 FUSE）
           wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O /tmp/appimagetool
           chmod +x /tmp/appimagetool
-          APPIMAGE_EXTRACT_AND_RUN=1 /tmp/appimagetool --no-appstream squashfs-root "$APPIMAGE"
+          ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 /tmp/appimagetool --no-appstream squashfs-root "$APPIMAGE"
           echo "Repack done: $APPIMAGE"
 
           rm -rf squashfs-root
